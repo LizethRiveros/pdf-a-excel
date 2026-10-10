@@ -93,6 +93,10 @@ function pageClass(tipo, text) {
   }
   if (/ESTADO DE SITUACION FINANCIERA/.test(t)) return 'Balance';
   if (/ESTADO DE RESULTADOS/.test(t)) return 'Resultados';
+  // Sin título: se reconoce por su contenido.
+  if (/\bTOTAL ACTIVO\b/.test(t) && /TOTAL PASIVO Y PATRIMONIO/.test(t)) return 'Balance';
+  if (/UTILIDAD (BRUTA|OPERATIVA|DEL EJERCICIO)|RESULTADO ANTES DE PART/.test(t) && !/SALDOS GENERALES/.test(t)) return 'Resultados';
+  if (/\b(INGRESOS ORDINARIOS|COSTO DE VENTAS|GASTOS OPERATIVOS|GASTOS ADMINISTRATIVOS|GASTOS DE VENTAS?|GASTOS FINANCIEROS|GASTOS DE DEPRECIACION)\b/.test(t) && !/CUENTAS POR (COBRAR|PAGAR)|SALDOS GENERALES/.test(t)) return 'Detalle resultados';
   if (/\bDEL \d{2}\/\d{2}\/\d{4} AL \d{2}\/\d{2}\/\d{4}/.test(t)) return 'Detalle resultados';
   return 'Detalle balance';
 }
@@ -152,8 +156,12 @@ function parseEeffPage(pg, ctx) {
     if (/^ESTADO DE (SITUACION FINANCIERA|RESULTADOS)/.test(nl) && sawData) { titulosTardios.push(label); continue; }
     if (/^ESTADO DE SITUACION FINANCIERA/.test(nl)) cur = 'Balance';
     else if (/^ESTADO DE RESULTADOS/.test(nl)) cur = 'Resultados';
-    else if (/^AL \d{1,2} DE /.test(nl) && cur !== 'Balance') cur = 'Detalle balance';
     else if (/^DEL \d{2}\/\d{2}\/\d{4} AL/.test(nl) && cur !== 'Resultados') cur = 'Detalle resultados';
+    else if (nums.length === 0 && (cur === 'Detalle balance' || cur === 'Detalle resultados')) {
+      // El bloque (notas del balance / detalle de resultados) se decide por el título de cada sección.
+      if (/^(OTROS )?INGRESOS( ORDINARIOS| DE GESTION)?$|^COSTO DE (VENTAS|SERVICIOS?)$|^GASTOS (OPERATIVOS|ADMINISTRATIVOS|DE VENTAS?|DE DEPRECIACION|FINANCIEROS|DIVERSOS)$/.test(nl)) cur = 'Detalle resultados';
+      else if (/(CUENTAS POR (COBRAR|PAGAR)|^EFECTIVO|^MERCADERIAS|^INTANGIBLES|^PROPIEDAD|^CAPITAL|^RESULTADOS ACUMULADOS|ACTIVOS? DIFERIDOS?|^DEPRECIACION|^TRIBUTOS|^REMUNERACIONES|^PASIVO|^OBLIGACIONES|^IMPUESTO A LA RENTA DIFERIDO)/.test(nl)) cur = 'Detalle balance';
+    }
     if (isFurniture(label) || (empresaNorm && normEmpresa(label) === empresaNorm)) { omitted += nums.length; continue; }
     const pct = segs.map((s) => s.pct).find((p) => p != null) ?? null;
     const codigo = segs.flatMap((s) => s.codes)[0] ?? '';
