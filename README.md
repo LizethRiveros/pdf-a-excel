@@ -25,7 +25,29 @@ Pensado para personas que no son técnicas y trabajan en **laptops de empresa co
 | Rótulo y monto en líneas desfasadas | Los junta en una sola fila. |
 | Varias tablas en una página | Las separa; si hay un título encima, lo usa como nombre de la hoja. |
 
-## Límites (para ser honestos)
+## Modo financiero (PDT 710 y estados financieros)
+
+Página `financiero.html` (o botón "Modo financiero"). Sube los PDF de varias empresas y obtienes, sin IA y sin costo:
+
+- **Un Excel por empresa**: una hoja por estado (balance, resultados, notas, PDT), con el nombre original de cada cuenta, su casilla o nota, el **PDF y la página de origen**, subtotales recalculados **con fórmulas** y su diferencia contra el PDF, una hoja `Datos` plana y las incidencias de esa empresa.
+- **Un maestro consolidado**: consolidado por periodo (PDT 2025, EEFF jul-2026, etc.; nunca se mezclan fechas de corte), `Cruce CxC-CxP`, `Eliminaciones` (asientos y saldos no conciliados), `Antes vs Después`, `Comparativo` (solo cifras comparables), `Incidencias` e `Inventario PDF` con la cobertura de cifras de cada archivo.
+
+Reglas que aplica:
+
+- Solo elimina saldos **recíprocos** (por cobrar de una empresa contra por pagar de otra) del **mismo corte y moneda**, con monto idéntico (tolerancia configurable) y naturaleza intercompañía sustentada. Cuentas de accionistas o "posibles" se muestran como candidatas y **no se eliminan hasta que las marques**. Las cuentas "de terceros" nunca se eliminan.
+- Todo saldo no conciliado queda visible con su motivo (diferencia de monto, falta el documento de la contraparte a ese corte, etc.).
+- Detecta duplicados, empresas por RUC o nombre, subtotales que no cuadran, balances que no cuadran, resultado del ejercicio distinto entre estados, cifras no capturadas y páginas leídas con OCR.
+
+Por línea de comandos (Node), para procesar una carpeta completa:
+
+```bash
+npm install
+node scripts/fin-cli.mjs ruta/a/los/pdf --out salida
+```
+
+Límites: lee PDT 710 y estados financieros con la estructura de los ejemplos (rótulo, nota/casilla, importe). Otros formatos se leen de forma genérica y quedan marcados para revisión. El OCR de este modo es menos fiable que el texto digital: usa PDF digitales cuando puedas.
+
+## Límites del conversor de tablas (para ser honestos)
 
 - Funciona mejor con PDFs generados por computadora que con escaneos. En un escaneo borroso el OCR puede equivocarse (por ejemplo `37,935` → `37.035`): **revisa siempre las cifras** antes de usarlas.
 - Los formularios muy complejos (con casillas y celdas combinadas) salen como tablas aproximadas; el editor sirve para dejarlas como las necesitas.

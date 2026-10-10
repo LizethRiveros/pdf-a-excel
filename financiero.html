@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>PDF a Excel · Modo financiero</title>
+  <meta name="description" content="Consolida PDT 710 y estados financieros en PDF: un Excel por empresa y un maestro con cruce y eliminaciones intercompañía. Todo en tu navegador.">
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="css/styles.css">
+  <style>
+    .modes { display: flex; gap: 8px; margin: 10px 0 0; }
+    .modes a { padding: 6px 12px; border: 1px solid var(--line); border-radius: 8px; text-decoration: none; color: inherit; background: var(--card); }
+    .modes a.on { border-color: var(--accent); font-weight: 600; }
+    .card { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; margin: 12px 0; }
+    .card h2 { margin: 0 0 8px; font-size: 1.1rem; }
+    table.t { border-collapse: collapse; width: 100%; font-size: .88rem; }
+    table.t th, table.t td { border: 1px solid var(--line); padding: 4px 8px; text-align: left; vertical-align: top; }
+    table.t th { background: color-mix(in srgb, var(--accent) 14%, var(--card)); }
+    .scroll { overflow: auto; max-height: 360px; }
+    .alta { color: #c00000; font-weight: 600; }
+    .kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 8px; }
+    .kpi { border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; }
+    .kpi b { display: block; font-size: 1.4rem; }
+    input.cell { width: 100%; min-width: 120px; font: inherit; padding: 3px 6px; border: 1px solid var(--line); border-radius: 6px; background: var(--card); color: inherit; }
+    ul.rep { margin: 6px 0 0 18px; padding: 0; }
+  </style>
+</head>
+<body>
+  <header class="top">
+    <div class="wrap">
+      <h1>PDF a Excel · Modo financiero</h1>
+      <p class="lead">Sube los <strong>PDT 710</strong> y los <strong>estados financieros</strong> de varias empresas. Obtienes un Excel por empresa y un <strong>maestro consolidado</strong> con cruce de cuentas relacionadas y eliminaciones. Sin IA y sin costo.</p>
+      <p class="privacy">🔒 Tus archivos <strong>no salen de tu computadora</strong>: todo se procesa en tu navegador.</p>
+      <div class="modes"><a href="index.html">Convertir tablas</a><a class="on" href="financiero.html">Modo financiero</a></div>
+    </div>
+  </header>
+
+  <main class="wrap">
+    <label id="drop" class="drop" tabindex="0">
+      <input id="file" type="file" accept=".pdf,application/pdf,image/png,image/jpeg" multiple hidden>
+      <strong>Arrastra aquí todos los PDF (PDT y estados financieros)</strong>
+      <span>Puedes soltar varios a la vez y seguir agregando más después</span>
+    </label>
+    <details class="options">
+      <summary>Opciones</summary>
+      <div class="grid-opts">
+        <label>Si un PDF es un escaneo (sin texto)
+          <select id="opt-ocr"><option value="auto" selected>Usar OCR automáticamente</option><option value="never">No usar OCR</option></select>
+        </label>
+        <label>Tolerancia para considerar iguales dos saldos (S/)
+          <input id="opt-tol" type="number" min="0" step="0.5" value="1" class="cell">
+        </label>
+        <label><button id="btn-clear" type="button">Empezar de nuevo (quitar todos los PDF)</button></label>
+      </div>
+    </details>
+
+    <section id="status" class="status" hidden aria-live="polite"><div class="bar"><div id="bar-fill"></div></div><p id="status-text"></p></section>
+
+    <div id="out" hidden>
+      <section class="card" id="informe"></section>
+
+      <section class="card">
+        <h2>Descargas</h2>
+        <div class="actions" id="downloads"></div>
+        <p class="hint">Cada Excel trae fórmulas, el PDF y la página de origen de cada importe y una hoja de incidencias. Revisa las incidencias ALTAS antes de usar las cifras.</p>
+      </section>
+
+      <section class="card">
+        <h2>1. PDF procesados</h2>
+        <p class="hint">Si la empresa o la fecha de corte se detectó mal, corrígela aquí y todo se recalcula.</p>
+        <div class="scroll"><table class="t" id="t-docs"></table></div>
+      </section>
+
+      <section class="card">
+        <h2>2. Cruce de cuentas relacionadas</h2>
+        <p class="hint">Solo se eliminan saldos recíprocos del mismo corte y con sustento. Los pares de sustento medio (accionistas, posibles) no se eliminan hasta que los marques.</p>
+        <div class="scroll"><table class="t" id="t-pares"></table></div>
+        <h3 style="margin:12px 0 4px;font-size:1rem">Saldos sin conciliar (siguen en el consolidado)</h3>
+        <div class="scroll"><table class="t" id="t-nc"></table></div>
+      </section>
+
+      <section class="card">
+        <h2>3. Incidencias y datos por validar</h2>
+        <div class="scroll"><table class="t" id="t-inc"></table></div>
+      </section>
+    </div>
+  </main>
+
+  <footer class="wrap foot"><p>Código abierto (MIT). Reglas y posiciones de texto, sin IA: revisa siempre las incidencias y compara los totales con tus documentos.</p></footer>
+
+  <script src="vendor/xlsx/xlsx-style.min.js"></script>
+  <script src="vendor/jszip/jszip.min.js"></script>
+  <script src="vendor/tesseract/tesseract.min.js"></script>
+  <script type="module" src="js/financiero.js"></script>
+</body>
+</html>
