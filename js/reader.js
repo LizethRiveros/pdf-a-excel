@@ -2,6 +2,7 @@
 // Lo usan los dos modos de la herramienta: conversor de tablas y modo financiero.
 import * as pdfjsLib from '../vendor/pdfjs/pdf.min.mjs';
 import { pdfTextToItems } from './extract.js';
+import { splitHidden, formsPorItem } from './visibility.js';
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = new URL('../vendor/pdfjs/pdf.worker.min.mjs', import.meta.url).href;
 
@@ -30,7 +31,7 @@ export async function ocrCanvas(canvas, lang, onProgress) {
   const { data } = await worker.recognize(canvas);
   return (data.words || [])
     .filter((w) => w.text && /[\p{L}\p{N}]/u.test(w.text) && w.confidence >= 30) // descarta rayas y ruido sin letras ni números
-    .map((w) => ({ str: w.text, x: w.bbox.x0, y: w.bbox.y0, w: w.bbox.x1 - w.bbox.x0, h: w.bbox.y1 - w.bbox.y0 }));
+    .map((w) => ({ str: w.text, x: w.bbox.x0, y: w.bbox.y0, w: w.bbox.x1 - w.bbox.x0, h: w.bbox.y1 - w.bbox.y0, conf: w.confidence }));
 }
 
 export async function renderPdfPage(pdf, pageNo, scale) {
@@ -56,8 +57,22 @@ export async function readPdf(file, o, progress) {
     progress(`${file.name}: página ${p} de ${pdf.numPages}`, (p - 1) / pdf.numPages);
     const page = await pdf.getPage(p);
     const vp = page.getViewport({ scale: 1 });
-    let items = pdfTextToItems(await page.getTextContent(), vp.height);
+    const tc = await page.getTextContent();
+    let items = pdfTextToItems(tc, vp.height);
+    if (items.length && o.verificarVisibilidad !== false) {
+      const forms = formsPorItem(tc.items, await page.getOperatorList(), pdfjsLib.OPS);
+      if (forms) for (const it of items) it.form = forms[it.idx];
+    }
     let pageW = vp.width, pageH = vp.height, source = 'pdf';
+    let ocultos = [], dudosos = [];
+    if (items.length && o.verificarVisibilidad !== false) {
+      // Se descarta el texto que existe en el PDF pero no se ve en la página.
+      const VIS_SCALE = 1.5;
+      const cv = await renderPdfPage(pdf, p, VIS_SCALE);
+      const img = cv.getContext('2d').getImageData(0, 0, cv.width, cv.height);
+      const r = splitHidden(items, img.data, cv.width, cv.height, VIS_SCALE, { channels: 4 });
+      items = r.visible; ocultos = r.hidden; dudosos = r.doubtful;
+    }
     const chars = items.reduce((s, i) => s + i.str.length, 0);
     const needOcr = o.ocr === 'force' || (o.ocr === 'auto' && chars < 20);
     if (needOcr) {
@@ -66,7 +81,7 @@ export async function readPdf(file, o, progress) {
       items = await ocrCanvas(canvas, o.lang, (f) => progress(`${file.name}: página ${p} (OCR ${Math.round(f * 100)}%)`, (p - 1 + f) / pdf.numPages));
       pageW = canvas.width; pageH = canvas.height; source = 'ocr';
     }
-    pages.push({ page: p, pageW, pageH, items, source });
+    pages.push({ page: p, pageW, pageH, items, source, ocultos, dudosos });
   }
   return { pdf, pages };
 }

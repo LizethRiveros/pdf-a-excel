@@ -5,9 +5,12 @@
 // Requiere: npm install   (pdfjs-dist y xlsx-js-style solo se usan aquí)
 import fs from 'node:fs';
 import path from 'node:path';
+import os from 'node:os';
+import { spawnSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 import * as pdfjs from 'pdfjs-dist/legacy/build/pdf.mjs';
 import { pdfTextToItems } from '../js/extract.js';
+import { splitHidden, formsPorItem } from '../js/visibility.js';
 import { parseDocument } from '../js/fin-parse.js';
 import { buildModel } from '../js/fin-cruce.js';
 import { createKit } from '../js/fin-excel.js';
@@ -23,15 +26,45 @@ if (!inputs.length) { console.error('Uso: node scripts/fin-cli.mjs <carpeta-o-pd
 const files = inputs.flatMap((p) => (fs.statSync(p).isDirectory()
   ? fs.readdirSync(p).filter((f) => /\.pdf$/i.test(f)).sort().map((f) => path.join(p, f)) : [p]));
 
+// Renderiza las páginas en gris con pdftoppm (poppler) para verificar qué texto se ve realmente.
+const hayPdftoppm = spawnSync('pdftoppm', ['-v']).error == null;
+const VIS_DPI = 108, VIS_SCALE = VIS_DPI / 72;
+function renderGris(file) {
+  if (!hayPdftoppm) return null;
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'finvis-'));
+  const r = spawnSync('pdftoppm', ['-r', String(VIS_DPI), '-gray', file, path.join(dir, 'p')]);
+  if (r.status !== 0) return null;
+  const out = new Map();
+  for (const f of fs.readdirSync(dir)) {
+    const m = f.match(/-(\d+)\.pgm$/);
+    if (!m) continue;
+    const buf = fs.readFileSync(path.join(dir, f));
+    let pos = 0;
+    const tok = () => { while (buf[pos] <= 32) pos++; let s = ''; while (buf[pos] > 32) s += String.fromCharCode(buf[pos++]); return s; };
+    tok(); const w = +tok(), h = +tok(); tok(); pos++;
+    out.set(+m[1], { w, h, px: buf.subarray(pos) });
+  }
+  fs.rmSync(dir, { recursive: true, force: true });
+  return out;
+}
+
 async function leer(file) {
   const pdf = await pdfjs.getDocument({ data: new Uint8Array(fs.readFileSync(file)), verbosity: 0 }).promise;
   const pages = [];
+  const gris = renderGris(file);
+  if (!gris) console.warn('  (aviso) sin pdftoppm: no se verificó el texto oculto de ' + path.basename(file));
   for (let p = 1; p <= pdf.numPages; p++) {
     const page = await pdf.getPage(p);
     const vp = page.getViewport({ scale: 1 });
-    const items = pdfTextToItems(await page.getTextContent(), vp.height);
+    const tc = await page.getTextContent();
+    let items = pdfTextToItems(tc, vp.height);
+    const forms = items.length ? formsPorItem(tc.items, await page.getOperatorList(), pdfjs.OPS) : null;
+    if (forms) for (const it of items) it.form = forms[it.idx];
+    let ocultos = [], dudosos = [];
+    const g = gris?.get(p);
+    if (g && items.length) { const r = splitHidden(items, g.px, g.w, g.h, VIS_SCALE, { channels: 1 }); items = r.visible; ocultos = r.hidden; dudosos = r.doubtful; }
     const chars = items.reduce((s, i) => s + i.str.length, 0);
-    pages.push({ page: p, pageW: vp.width, pageH: vp.height, items, source: 'pdf', sinTexto: chars < 20 });
+    pages.push({ page: p, pageW: vp.width, pageH: vp.height, items, source: 'pdf', sinTexto: chars < 20, ocultos, dudosos, sinVerificar: !g });
   }
   return { pdf: path.basename(file), pages };
 }

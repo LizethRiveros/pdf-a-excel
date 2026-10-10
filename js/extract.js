@@ -42,8 +42,9 @@ function buildCells(line, glyphH, wordGap) {
       last.w = it.x + it.w - last.x;
       last.y = Math.min(last.y, it.y);
       last.h = Math.max(last.h, it.y + it.h - last.y);
+      if (it.conf != null) last.conf = Math.min(last.conf ?? 100, it.conf);
     } else {
-      cells.push({ str: it.str.trim(), x: it.x, y: it.y, w: it.w, h: it.h });
+      cells.push({ str: it.str.trim(), x: it.x, y: it.y, w: it.w, h: it.h, ...(it.conf != null ? { conf: it.conf } : {}) });
     }
   }
   return cells;
@@ -112,12 +113,13 @@ function bboxOf(cellsRows) {
 // Convierte el texto de una página de pdf.js en fragmentos con posición (origen arriba-izquierda).
 export function pdfTextToItems(textContent, pageH) {
   const items = [];
-  for (const it of textContent.items) {
+  for (let idx = 0; idx < textContent.items.length; idx++) {
+    const it = textContent.items[idx];
     if (!it.str || !it.str.trim()) continue;
     const [a, b, , d, e, f] = it.transform;
     if (Math.abs(b) > Math.abs(a) * 0.2) continue; // texto girado: se ignora
     const h = it.height || Math.abs(d);
-    items.push({ str: it.str, x: e, y: pageH - f - h * 0.8, w: it.width, h });
+    items.push({ str: it.str, x: e, y: pageH - f - h * 0.8, w: it.width, h, sz: Math.abs(a), idx });
   }
   return items;
 }

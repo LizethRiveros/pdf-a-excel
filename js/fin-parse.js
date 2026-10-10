@@ -3,6 +3,7 @@
 // página de origen, validación de subtotales e incidencias. No usa IA: reglas y posiciones.
 import { analyzeLines } from './extract.js';
 import { parseNumber } from './numbers.js';
+import { findOverlaps } from './visibility.js';
 
 export const norm = (s) =>
   String(s ?? '').normalize('NFD').replace(/[̀-ͯ]/g, '').toUpperCase()
@@ -137,6 +138,8 @@ function parseEeffPage(pg, ctx) {
   let colHeads = null;
   let omitted = 0;
   let cur = ctx.clase;
+  let sawData = false;
+  const titulosTardios = [];
   const empresaNorm = ctx.empresa ? normEmpresa(ctx.empresa) : '';
   for (const line of pg.lines) {
     const segs = segmentsOf(line.cells);
@@ -144,6 +147,9 @@ function parseEeffPage(pg, ctx) {
     const nums = segs.flatMap((s) => s.nums);
     // Una página puede cambiar de bloque a mitad (fin de las notas del balance + inicio del detalle de resultados).
     const nl = norm(label);
+    // Un título de estado solo cambia el bloque al inicio de la página; uno que aparece después de cifras
+    // es texto encimado de otro documento y no debe reclasificar lo que ya se leyó.
+    if (/^ESTADO DE (SITUACION FINANCIERA|RESULTADOS)/.test(nl) && sawData) { titulosTardios.push(label); continue; }
     if (/^ESTADO DE SITUACION FINANCIERA/.test(nl)) cur = 'Balance';
     else if (/^ESTADO DE RESULTADOS/.test(nl)) cur = 'Resultados';
     else if (/^AL \d{1,2} DE /.test(nl) && cur !== 'Balance') cur = 'Detalle balance';
@@ -160,6 +166,7 @@ function parseEeffPage(pg, ctx) {
       continue; // línea de solo porcentaje u otros: no aporta importes
     }
     prevHeading = false;
+    sawData = true;
     if (nums.length > 1 && !colHeads) {
       colHeads = recentText.filter((l) => line.yc - l.yc <= pg.pitch * 4.5).flatMap((l) => l.cells.map((c) => ({ ...c, y: l.yc })));
     }
@@ -180,7 +187,7 @@ function parseEeffPage(pg, ctx) {
     recentText = [];
     rows.push({ label, codigo, pct, entries, seccion, y: line.yc, nusados: nums.length, clase: cur });
   }
-  return { rows, omitted };
+  return { rows, omitted, titulosTardios };
 }
 
 // ---------- parser PDT 710 ----------
@@ -293,12 +300,14 @@ function validar(lineas) {
 }
 
 // ---------- documento completo ----------
+const analyzedItems = (a) => a.items || [];
+
 export function parseDocument({ pdf, pages }) {
   const incidencias = [];
   const inc = (severidad, page, detalle, tipo = 'Extracción') => incidencias.push({ severidad, tipo, pdf, pagina: page, detalle });
   const analyzed = pages.map((p) => {
     const a = analyzeLines(p.items);
-    return { page: p.page, pageW: p.pageW, pageH: p.pageH, source: p.source, ...a, lines: a.lines };
+    return { items: p.items, page: p.page, pageW: p.pageW, pageH: p.pageH, source: p.source, ocultos: p.ocultos || [], dudosos: p.dudosos || [], sinVerificar: !!p.sinVerificar, ...a, lines: a.lines };
   });
   const texts0 = analyzed.map((a) => a.lines.map(lineText).join('\n'));
   const tipoPre = detectTipo(texts0);
@@ -350,13 +359,23 @@ export function parseDocument({ pdf, pages }) {
   let n = 0;
   for (const a of analyzed) {
     const clase = pageClass(tipoUse, texts[a.page - 1]);
-    const base = { page: a.page, clase, source: a.source, totalNums: amountCells(a), leidos: 0 };
+    const base = { page: a.page, clase, source: a.source, totalNums: amountCells(a), leidos: 0, ocultos: a.ocultos.length };
     paginas.push(base);
+    if (a.ocultos.length) {
+      const nums = a.ocultos.map((h) => h.str.trim()).filter((t) => parseNumber(t, '.') || /^\(?-?[\d.,]+\)?%?$/.test(t));
+      const muestra = [...new Set(nums)].slice(0, 6).join(', ');
+      inc('alta', a.page, `Esta página contiene ${a.ocultos.length} texto(s) que NO se ven en el documento (texto oculto o encimado)${muestra ? `, entre ellos las cifras ${muestra}${nums.length > 6 ? '…' : ''}` : ''}. Se ignoraron para no mezclar importes; verifique que lo que se muestra coincide con lo que ve en el PDF.`, 'Texto oculto');
+    }
+    const ov = clase === 'Informativa' ? [] : findOverlaps(analyzedItems(a).filter((i) => i.str.trim().length >= 3));
+    if (ov.length) inc('alta', a.page, `Texto superpuesto en la página (${ov.length} cruce(s), p. ej. "${ov[0][0]}" sobre "${ov[0][1]}"): las cifras de esta página pueden estar mezcladas con otro contenido. Verifíquelas contra el PDF.`, 'Texto superpuesto');
+    const dudNum = a.dudosos.filter((h) => /\d/.test(h.str));
+    if (dudNum.length) inc('media', a.page, `${dudNum.length} cifra(s) con tinta muy tenue en el documento (${[...new Set(dudNum.map((h) => h.str.trim()))].slice(0, 5).join(', ')}): confirme que se leen bien.`, 'Legibilidad');
     if (a.source === 'ocr') inc('media', a.page, 'Página leída con OCR (escaneo/imagen): verificar cada cifra contra el original.', 'OCR');
     if (clase === 'Informativa') { base.informativa = true; continue; }
     const parsed = tipoUse === 'PDT710' ? parsePdtPage(a, { clase, empresa }) : parseEeffPage(a, { empresa, clase });
     const rows = parsed.rows;
     base.omitidos = parsed.omitted;
+    if (parsed.titulosTardios?.length) inc('media', a.page, `Aparecen títulos de estado en medio de la página (${[...new Set(parsed.titulosTardios)].join('; ')}): probable texto encimado; se ignoraron. Verifique la página.`, 'Texto superpuesto');
     for (const r of rows) {
       r.entries.forEach((e, j) => {
         const cuenta = r.label || (tipoUse === 'PDT710' ? (r.codigo ? `Casilla ${r.codigo}` : '(sin rótulo)') : '(subtotal sin rótulo)');
@@ -374,6 +393,7 @@ export function parseDocument({ pdf, pages }) {
       base.leidos += r.nusados;
     }
   }
+  if (analyzed.some((a) => a.sinVerificar)) inc('media', '', 'No se pudo verificar si hay texto oculto en este PDF (no se renderizó la página).', 'Texto oculto');
   validar(lineas);
   for (const l of lineas) {
     if (l.validacion === 'diferencia') inc('alta', l.page, `El subtotal "${l.cuenta}"${l.columna ? ' [' + l.columna + ']' : ''} (${l.importe}) no cuadra con sus componentes (diferencia ${Math.round(l.diff * 100) / 100}).`, 'Validación');
