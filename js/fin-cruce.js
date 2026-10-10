@@ -3,7 +3,7 @@
 import { norm, normEmpresa } from './fin-parse.js';
 
 const GENERIC = new Set(['SAC', 'SA', 'SRL', 'SAA', 'EIRL', 'GRUPO', 'INVERSIONES', 'SERVICIOS', 'COMERCIAL', 'CORPORACION', 'INMOBILIARIA',
-  'HOLDING', 'PERU', 'DEL', 'DE', 'LA', 'EL', 'Y', 'E', 'LOS', 'LAS', 'CONSTRUCTORA', 'INVERSION', 'NEGOCIOS', 'EMPRESA', 'COMPANIA', 'INDUSTRIAL']);
+  'HOLDING', 'PERU', 'CINE', 'CINES', 'CINEMAS', 'PREMIUM', 'DEL', 'DE', 'LA', 'EL', 'Y', 'E', 'LOS', 'LAS', 'CONSTRUCTORA', 'INVERSION', 'NEGOCIOS', 'EMPRESA', 'COMPANIA', 'INDUSTRIAL']);
 const firstToken = (nombre) => normEmpresa(nombre).split(' ').find((t) => t.length >= 4 && !GENERIC.has(t)) || '';
 
 // Casillas del PDT 710 que son cuentas con relacionadas / accionistas.
@@ -80,6 +80,20 @@ export function buildModel(docsIn, opts = {}) {
     d.empresa_ = emp;
     emp.docs.push(d);
   }
+  // Nombres que difieren solo por palabras extra ("CINE NORTE" vs "CINE NORTE PREMIUM"): se unen si hay un único candidato.
+  const toks = (e) => normEmpresa(e.nombre).split(' ').filter((t) => t && !['SAC', 'SA', 'SRL', 'SAA', 'EIRL', 'S', 'A', 'C'].includes(t));
+  for (const a of [...empresas]) {
+    const ta = toks(a);
+    if (ta.length < 2) continue;
+    const cands = empresas.filter((b) => b !== a && toks(b).length > ta.length && ta.every((t) => toks(b).includes(t)) && (!a.ruc || !b.ruc || a.ruc === b.ruc));
+    if (cands.length !== 1) continue;
+    const b = cands[0];
+    for (const d of a.docs) { d.empresa_ = b; b.docs.push(d); }
+    if (a.ruc && !b.ruc) b.ruc = a.ruc;
+    empresas.splice(empresas.indexOf(a), 1);
+    inc('media', 'Empresa', `Se unieron "${a.nombre}" y "${b.nombre}" por nombre similar (los documentos de "${a.nombre}" no traen el nombre completo). Confirmar que son la misma empresa; si no lo son, corrija el nombre.`);
+  }
+  empresas.forEach((e, i) => { e.id = i + 1; });
   for (let i = 0; i < empresas.length; i++) for (let j = i + 1; j < empresas.length; j++) {
     const a = firstToken(empresas[i].nombre), b = firstToken(empresas[j].nombre);
     if (a && a === b) inc('media', 'Empresa', `"${empresas[i].nombre}" y "${empresas[j].nombre}" comparten el nombre "${a}": confirmar si son la misma empresa (se tratan como distintas).`);

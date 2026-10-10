@@ -136,6 +136,15 @@ export function createKit(XLSX) {
     const r1 = aoa.length;
     aoa.push([t('Totales', S.bold), t(''), t(''), t(''), ...[4, 5, 6, 7, 8, 9, 10].map((c) => ({ t: 'n', v: docs.length ? aoa.slice(r0 - 1, r1).reduce((s, row) => s + (row[c]?.v || 0), 0) : 0, f: `SUM(${colL(c)}${r0}:${colL(c)}${r1})`, s: S.bold }))]);
     aoa.push([]);
+    aoa.push([t('Hojas de este libro (clic para ir)', S.sec)]);
+    aoa.push(head(['Hoja', 'Contenido']));
+    for (const sh of sheets) {
+      const desc = /Balance Jul|Balance \d|PDT Balance/.test(sh.name) && !/Notas/.test(sh.name) ? 'Estado de situación financiera' : /Notas balance/.test(sh.name) ? 'Detalle (notas) del balance' : /Notas resultados/.test(sh.name) ? 'Detalle (notas) del estado de resultados'
+        : /Resultados/.test(sh.name) ? 'Estado de resultados' : /Renta/.test(sh.name) ? 'Determinación del impuesto a la renta (PDT)' : '';
+      aoa.push([{ t: 's', v: sh.name, l: { Target: `#'${sh.name}'!A1` }, s: { font: { color: { rgb: '0563C1' }, underline: true } } }, t(desc)]);
+    }
+    aoa.push([{ t: 's', v: 'Datos', l: { Target: "#'Datos'!A1" }, s: { font: { color: { rgb: '0563C1' }, underline: true } } }, t('Todas las líneas en formato plano')]);
+    aoa.push([]);
     aoa.push([t('Cifras clave (enlazadas a las hojas de detalle)', S.sec)]);
     aoa.push(head(['Concepto', 'Periodo', 'Importe', 'Hoja de origen']));
     for (const k of keyRows) aoa.push([t(k.k), t(k.d.periodoEtiqueta), n(k.importe, null, `${q(k.name)}!E${k.row}`), t(`${k.name} · fila ${k.row} · ${k.d.pdf}`)]);

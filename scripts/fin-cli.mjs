@@ -8,6 +8,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { spawnSync } from 'node:child_process';
 import { createRequire } from 'node:module';
+import { createWorker } from 'tesseract.js';
 import * as pdfjs from 'pdfjs-dist/legacy/build/pdf.mjs';
 import { pdfTextToItems } from '../js/extract.js';
 import { splitHidden, formsPorItem } from '../js/visibility.js';
@@ -48,6 +49,22 @@ function renderGris(file) {
   return out;
 }
 
+// OCR (Tesseract) para páginas que son imagen y no tienen texto.
+let ocrWorker = null;
+async function ocrPagina(file, pageNo) {
+  if (!hayPdftoppm) return null;
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'finocr-'));
+  const r = spawnSync('pdftoppm', ['-r', '250', '-png', '-f', String(pageNo), '-l', String(pageNo), file, path.join(dir, 'p')]);
+  const png = fs.readdirSync(dir).find((f) => f.endsWith('.png'));
+  if (r.status !== 0 || !png) return null;
+  ocrWorker ??= await createWorker(['spa', 'eng'], 1, { langPath: new URL('../vendor/tessdata', import.meta.url).pathname, gzip: true, cachePath: os.tmpdir() });
+  const { data } = await ocrWorker.recognize(path.join(dir, png));
+  fs.rmSync(dir, { recursive: true, force: true });
+  const items = (data.words || []).filter((w) => w.text && /[\p{L}\p{N}]/u.test(w.text) && w.confidence >= 30)
+    .map((w) => ({ str: w.text, x: w.bbox.x0, y: w.bbox.y0, w: w.bbox.x1 - w.bbox.x0, h: w.bbox.y1 - w.bbox.y0, conf: w.confidence }));
+  return { items, pageW: data.imageWidth ?? Math.max(...items.map((i) => i.x + i.w), 1), pageH: data.imageHeight ?? Math.max(...items.map((i) => i.y + i.h), 1) };
+}
+
 async function leer(file) {
   const pdf = await pdfjs.getDocument({ data: new Uint8Array(fs.readFileSync(file)), verbosity: 0 }).promise;
   const pages = [];
@@ -64,6 +81,11 @@ async function leer(file) {
     const g = gris?.get(p);
     if (g && items.length) { const r = splitHidden(items, g.px, g.w, g.h, VIS_SCALE, { channels: 1 }); items = r.visible; ocultos = r.hidden; dudosos = r.doubtful; }
     const chars = items.reduce((s, i) => s + i.str.length, 0);
+    if (chars < 20) {
+      process.stdout.write(`\n    página ${p} sin texto: OCR... `);
+      const o = await ocrPagina(file, p);
+      if (o && o.items.length) { pages.push({ page: p, pageW: o.pageW, pageH: o.pageH, items: o.items, source: 'ocr', sinTexto: false, ocultos: [], dudosos: [], sinVerificar: false }); continue; }
+    }
     pages.push({ page: p, pageW: vp.width, pageH: vp.height, items, source: 'pdf', sinTexto: chars < 20, ocultos, dudosos, sinVerificar: !g });
   }
   return { pdf: path.basename(file), pages };
@@ -98,4 +120,5 @@ console.log(`Cortes: ${model.cortes.join(', ')}`);
 console.log(`Relacionadas/accionistas: ${model.rel.length} · pares recíprocos: ${model.pares.length} · eliminados: ${model.pares.filter((p) => p.confirmada).length} · NO conciliados: ${model.noConciliados.length}`);
 console.log(`Incidencias: ${cnt('alta')} altas, ${cnt('media')} medias, ${cnt('info')} informativas`);
 for (const i of model.incidencias.filter((x) => x.severidad === 'alta')) console.log(`  [ALTA] ${i.tipo} ${i.empresa ? '(' + i.empresa + ') ' : ''}${i.detalle}`);
+await ocrWorker?.terminate();
 console.log('\nArchivos generados:'); out.forEach((f) => console.log('  ' + f));
