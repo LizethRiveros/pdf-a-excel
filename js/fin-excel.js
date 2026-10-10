@@ -60,35 +60,100 @@ export function createKit(XLSX) {
     return parts.join(',');
   };
 
-  // ---------- hoja de un documento (una por estado) ----------
-  function docSheet(model, d, clase, lines) {
+  // ---------- hoja de un documento: se ve como el PDF y permite calcular ----------
+  // Estilo tipo estado financiero: Arial 10, secciones en negrita, cuentas con sangría, totales con línea superior.
+  const st = ({ b, i, sz = 10, color, fill, top, dbl, ind, h, wrap } = {}) => ({
+    font: { name: 'Arial', sz, bold: !!b, italic: !!i, ...(color ? { color: { rgb: color } } : {}) },
+    ...(fill ? { fill: { fgColor: { rgb: fill } } } : {}),
+    ...(top || dbl ? { border: { ...(top ? { top: { style: 'thin', color: { rgb: '000000' } } } : {}), ...(dbl ? { bottom: { style: 'double', color: { rgb: '000000' } } } : {}) } } : {}),
+    alignment: { vertical: 'top', wrapText: !!wrap, ...(h ? { horizontal: h } : {}), ...(ind ? { indent: ind } : {}) },
+  });
+  const GRAND = /^(TOTAL (ACTIVO|PASIVO Y PATRIMONIO|PATRIMONIO Y PASIVO)|UTILIDAD DEL EJERCICIO|PERDIDA DEL EJERCICIO|RESULTADO DE EJERCICIO)/;
+
+  function presSheet(model, d, clase, entradas, lineMap) {
+    const pdt = d.tipo === 'PDT710';
+    const intFmt = pdt ? '#,##0;(#,##0)' : '#,##0;-#,##0';
+    const maxCols = Math.min(5, Math.max(1, ...entradas.filter((e) => e.tipo === 'd').map((e) => e.lineIds.length)));
+    const hasPct = !pdt && entradas.some((e) => e.tipo === 'd' && e.pct != null);
+    const cAmt = 2, cPct = hasPct ? cAmt + maxCols : -1;
+    const cSp = (hasPct ? cPct : cAmt + maxCols - 1) + 1, cPdf = cSp + 1, cDif = cSp + 2, cCtl = cSp + 3, cPag = cSp + 4;
     const aoa = [];
-    aoa.push([t(`${d.empresa_.nombre}`, S.title)]);
-    aoa.push([t(`RUC: ${d.empresa_.ruc || '(no consta en el documento)'}   ·   Periodo: ${d.periodoEtiqueta}   ·   Fecha de corte: ${d.fechaCorte}   ·   Moneda: ${d.moneda === 'USD' ? 'US$' : 'Soles (S/)'}`, S.sub)]);
-    aoa.push([t(`PDF de origen: ${d.pdf}   ·   Estado: ${clase}   ·   Los importes se transcriben tal como figuran en el PDF; los subtotales se recalculan con fórmulas.`, S.sub)]);
-    aoa.push([]);
-    aoa.push(head(['Sección', 'Cuenta (nombre original)', 'Cód. (casilla/nota)', 'Columna', 'Importe', 'Calculado (fórmula)', 'Diferencia', '% s/ total (PDF)', 'PDF', 'Pág.', 'Estado']));
-    const first = aoa.length + 1; // fila Excel (1-based) de la primera línea
     const rowOf = new Map();
-    lines.forEach((l, i) => rowOf.set(l.n, first + i));
-    for (const l of lines) {
-      const r = rowOf.get(l.n);
-      let calc = t(''), dif = t(''), est = t('');
-      if (l.subtotal) {
-        if (l.calc && !l.calc.noCuadra) {
+    const push = (cells) => { aoa.push(cells); return aoa.length; }; // devuelve la fila de Excel (1-based)
+    const amountCell = (v, style) => (v == null ? t('', style) : { t: 'n', v, z: Number.isInteger(v) ? intFmt : '#,##0.00;-#,##0.00', s: style });
+
+    // Título: igual al encabezado del PDF
+    const pages = new Set(entradas.filter((e) => e.tipo !== 't').map((e) => e.page));
+    const tit = d.estructura.find((e) => e.tipo === 't' && pages.has(e.page));
+    let colTitulo = tit?.colTitulo || '';
+    const lineasTit = [];
+    for (const x of tit?.textos || []) { if (/^[A-Za-z]{3,}-\d{2,4}$/.test(x)) colTitulo = x; else if (!lineasTit.some((y) => norm(y) === norm(x))) lineasTit.push(x); }
+    if (!lineasTit.length) lineasTit.push(d.empresa_.nombre);
+    lineasTit.forEach((x, k) => push([t(x, st({ b: k < 2, sz: k === 0 ? 14 : k === 1 ? 12 : 10, i: k > 1 }))]));
+    push([t(`${d.empresa_.nombre} · RUC ${d.empresa_.ruc || 'no consta'} · Corte ${d.fechaCorte} · ${d.moneda === 'USD' ? 'US$' : 'Soles (S/)'} · Fuente: ${d.pdf}`, st({ i: true, sz: 8, color: '666666' }))]);
+    push([]);
+    const headRow = [t('Cuenta', st({ b: true, fill: 'D9E2F3', top: true })), t(pdt ? 'Casilla' : 'Nota', st({ b: true, fill: 'D9E2F3', top: true, h: 'center' }))];
+    for (let j = 0; j < maxCols; j++) headRow.push(t(maxCols === 1 ? (colTitulo || 'Importe') : `Importe ${j + 1}`, st({ b: true, fill: 'D9E2F3', top: true, h: 'right' })));
+    if (hasPct) headRow.push(t('%', st({ b: true, fill: 'D9E2F3', top: true, h: 'right' })));
+    headRow[cPdf] = t('En el PDF', st({ b: true, sz: 8, color: '666666', h: 'right' }));
+    headRow[cDif] = t('Diferencia', st({ b: true, sz: 8, color: '666666', h: 'right' }));
+    headRow[cCtl] = t('Control del subtotal', st({ b: true, sz: 8, color: '666666' }));
+    headRow[cPag] = t('Pág.', st({ b: true, sz: 8, color: '666666', h: 'right' }));
+    const headerRow = push(headRow);
+
+    let prevPage = null;
+    let lastMultiKey = '';
+    for (const e of entradas) {
+      if (e.tipo === 't' || e.consumido) continue;
+      if (prevPage != null && e.page !== prevPage) push([t(`— pág. ${e.page} del PDF —`, st({ i: true, sz: 8, color: '999999' }))]);
+      prevPage = e.page;
+      for (let g = 0; g < (e.gap || 0); g++) push([]);
+      if (e.tipo === 'h') { push([t(e.texto, st({ b: true })), ...[]]); lastMultiKey = ''; continue; }
+      const ls = e.lineIds.map((n) => lineMap.get(n)).filter(Boolean);
+      if (!ls.length) continue;
+      const sub = ls.some((l) => l.subtotal);
+      const grand = sub && GRAND.test(norm(e.texto || ''));
+      const sBase = st({ b: sub, top: sub, dbl: grand });
+      if (ls.length > 1) { // tabla de varias columnas: se repite su encabezado una vez
+        const key = ls.map((l) => l.columna).join('|');
+        if (key !== lastMultiKey) { const hr = []; ls.forEach((l, j) => { hr[cAmt + j] = t(l.columna, st({ b: true, sz: 8, h: 'right', wrap: true })); }); push(hr); lastMultiKey = key; }
+      } else lastMultiKey = '';
+      const r = aoa.length + 1;
+      const row = [t(e.texto || '', st({ b: sub, top: sub, dbl: grand, ind: e.lvl || 0 })), t(e.codigo || '', st({ sz: 9, color: '444444', h: 'center', b: sub, top: sub, dbl: grand }))];
+      let ctl = '', ctlStyle = null, pdfVal = null, difF = null;
+      ls.forEach((l, j) => {
+        rowOf.set(l.n, { r, c: cAmt + j });
+        const col = colL(cAmt + j);
+        if (l.subtotal && l.calc && !l.calc.noCuadra) {
           const refs = l.calc.refs.map((x) => rowOf.get(x)).filter(Boolean);
-          const sum = l.calc.refs.reduce((s, x) => s + (lines.find((y) => y.n === x)?.importe ?? 0), 0);
-          calc = n(sum, null, `SUM(${rangeExpr(refs, 'E')})`);
-          dif = n((l.importe ?? 0) - sum, null, `E${r}-F${r}`);
-          est = t(Math.abs(l.diff) > 0.005 ? `Cuadra (redondeo ${Math.round(l.diff * 100) / 100})` : 'Cuadra', S.ok);
-        } else if (l.validacion === 'diferencia') est = t(`DIFERENCIA ${Math.round(l.diff * 100) / 100}`, S.bad);
-        else est = t(l.importe === 0 ? 'Cero' : 'Sin validar', S.warn);
-      }
-      const st = l.subtotal ? S.sub_row : null;
-      aoa.push([t(l.seccion, st), t(l.cuenta, st), t(l.codigo, st), t(l.columna, st), n(l.importe, st), calc, dif, pctc(l.pct), t(d.pdf), { t: 'n', v: l.page }, est]);
+          if (refs.length === l.calc.refs.length) {
+            const byCol = new Map();
+            refs.forEach(({ r: rr, c }) => (byCol.get(c) ?? byCol.set(c, []).get(c)).push(rr));
+            const parts = [...byCol.entries()].map(([c, rows]) => rangeExpr(rows, colL(c)));
+            const sum = l.calc.refs.reduce((acc, x) => acc + (lineMap.get(x)?.importe ?? 0), 0);
+            row[cAmt + j] = { t: 'n', v: sum, z: Number.isInteger(sum) ? intFmt : '#,##0.00;-#,##0.00', f: `SUM(${parts.join(',')})`, s: sBase };
+            if (ls.length === 1) { pdfVal = l.importe; difF = `${col}${r}-${colL(cPdf)}${r}`; }
+            const dif = Math.abs(l.diff) > 0.005;
+            if (!ctl) { ctl = dif ? `Cuadra (redondeo ${Math.round(l.diff * 100) / 100})` : 'Cuadra'; ctlStyle = st({ sz: 8, color: '1D6F42' }); }
+            return;
+          }
+        }
+        row[cAmt + j] = amountCell(l.enBlanco ? null : l.importe, sBase);
+        if (l.subtotal) {
+          if (l.validacion === 'diferencia') { ctl = `DIFERENCIA ${Math.round(l.diff * 100) / 100} frente a sus componentes`; ctlStyle = st({ b: true, sz: 8, color: 'C00000' }); }
+          else if (!ctl) { ctl = l.importe === 0 ? 'Cero' : 'Sin validar'; ctlStyle = st({ sz: 8, color: '996600' }); }
+        }
+      });
+      if (hasPct) row[cPct] = e.pct == null ? t('', sBase) : { t: 'n', v: e.pct, z: '0.00%', s: st({ b: sub, top: sub, dbl: grand, h: 'right' }) };
+      if (pdfVal != null) { row[cPdf] = { t: 'n', v: pdfVal, z: Number.isInteger(pdfVal) ? intFmt : '#,##0.00;-#,##0.00', s: st({ sz: 8, color: '666666' }) }; row[cDif] = { t: 'n', v: 0, z: '#,##0.00;-#,##0.00', f: difF, s: st({ sz: 8, color: '666666' }) }; }
+      if (ctl) row[cCtl] = t(ctl, ctlStyle);
+      row[cPag] = { t: 'n', v: e.page, s: st({ sz: 8, color: '999999', h: 'right' }) };
+      push(row);
     }
-    const ws = finish(aoa, [34, 52, 14, 24, 16, 18, 12, 12, 34, 6, 22], { freezeRow: 5 });
-    return { ws, rowOf };
+    push([]);
+    push([t('Los totales (negrita, con línea superior) son fórmulas sobre las cuentas de arriba; "En el PDF" muestra la cifra original para comparar.', st({ i: true, sz: 8, color: '666666' }))]);
+    const widths = [60, 11, ...Array(maxCols).fill(17), ...(hasPct ? [9] : []), 2, 15, 11, 30, 6];
+    return { ws: finish(aoa, widths, { freezeRow: headerRow }), rowOf };
   }
 
   // ---------- libro de una empresa ----------
@@ -104,7 +169,8 @@ export function createKit(XLSX) {
       for (const clase of ['Balance', 'Resultados', 'Detalle balance', 'Detalle resultados', 'Determinación']) {
         if (!clases.includes(clase)) continue;
         const cl = lines.filter((l) => l.clase === clase);
-        const { ws, rowOf } = docSheet(model, d, clase, cl);
+        const entradas = d.estructura.filter((e) => e.clase === clase && e.tipo !== 't');
+        const { ws, rowOf } = presSheet(model, d, clase, entradas, new Map(cl.map((l) => [l.n, l])));
         const name = safeName(claseSheet(d, clase), used);
         sheets.push({ name, ws });
         if (clase === 'Balance' || clase === 'Resultados') {
@@ -115,7 +181,7 @@ export function createKit(XLSX) {
               : /^TOTAL ACTIVO$/.test(nn) ? 'Total activo' : /^TOTAL PASIVO$/.test(nn) ? 'Total pasivo' : /^TOTAL PATRIMONIO$/.test(nn) ? 'Total patrimonio'
               : /^TOTAL PASIVO Y PATRIMONIO$/.test(nn) ? 'Total pasivo y patrimonio' : (clase === 'Resultados' && /^UTILIDAD DEL EJERCICIO|^PERDIDA DEL EJERCICIO/.test(nn)) ? 'Resultado del ejercicio (estado de resultados)'
               : (clase === 'Balance' && /^RESULTADO DEL EJERCICIO/.test(nn)) ? 'Resultado del ejercicio (balance)' : null;
-            if (k && l.importe != null) keyRows.push({ d, k, name, row: rowOf.get(l.n), importe: l.importe });
+            if (k && l.importe != null) keyRows.push({ d, k, name, row: rowOf.get(l.n)?.r, col: colL(rowOf.get(l.n)?.c ?? 2), importe: l.importe });
           }
         }
       }
@@ -147,7 +213,7 @@ export function createKit(XLSX) {
     aoa.push([]);
     aoa.push([t('Cifras clave (enlazadas a las hojas de detalle)', S.sec)]);
     aoa.push(head(['Concepto', 'Periodo', 'Importe', 'Hoja de origen']));
-    for (const k of keyRows) aoa.push([t(k.k), t(k.d.periodoEtiqueta), n(k.importe, null, `${q(k.name)}!E${k.row}`), t(`${k.name} · fila ${k.row} · ${k.d.pdf}`)]);
+    for (const k of keyRows) aoa.push([t(k.k), t(k.d.periodoEtiqueta), n(k.importe, null, `${q(k.name)}!${k.col}${k.row}`), t(`${k.name} · fila ${k.row} · ${k.d.pdf}`)]);
     aoa.push([]);
     aoa.push([t('Incidencias de esta empresa', S.sec)]);
     aoa.push(head(['Severidad', 'Tipo', 'PDF', 'Página', 'Detalle']));
@@ -179,40 +245,48 @@ export function createKit(XLSX) {
       const es = g.empresas.map((id) => emps.find((e) => e.id === id));
       const aoa = [[t(`Consolidado grupal — ${g.etiqueta} — corte ${g.corte}`, S.title)],
         [t('Importes en Soles (S/), antes de eliminaciones intercompañía. Cada importe indica su PDF y página de origen. No se mezclan periodos.', S.sub)], [t(`Empresas incluidas: ${es.map((e) => e.nombre).join(' · ')}`, S.sub)], []];
+      // Importes de todas las empresas juntos (se leen como un estado comparativo); el PDF y la página de origen van al final.
       const hdr = [t('Estado', S.head), t('Cód.', S.head), t('Cuenta (nombre original)', S.head)];
-      es.forEach((e) => { hdr.push(t(e.nombre, S.head)); hdr.push(t('Origen (PDF · pág.)', S.head)); });
-      hdr.push(t('Total grupo (antes de eliminar)', S.head), t('Observación', S.head));
+      es.forEach((e) => hdr.push(t(e.nombre, S.head)));
+      hdr.push(t('Total grupo (antes de eliminar)', S.head), t('Observación', S.head), t('', S.head));
+      es.forEach((e) => hdr.push(t(`Origen: ${e.nombre}`, S.head)));
       aoa.push(hdr);
       const first = aoa.length + 1;
       const rowOf = new Map();
-      const amtCols = es.map((_, i) => 3 + i * 2);
+      const amtCols = es.map((_, i) => 3 + i);
       g.rows.forEach((row, i) => {
         const r = first + i;
         rowOf.set(row.key, r);
-        const st = row.subtotal ? S.sub_row : null;
-        const line = [t(row.clase, st), t(row.codigo, st), t(row.cuenta, st)];
+        if (row.heading) {
+          aoa.push([t(row.clase, st({ b: true, sz: 8, color: '666666' })), t(''), t(row.cuenta, st({ b: true }))]);
+          return;
+        }
+        const sub = row.subtotal;
+        const sb = st({ b: sub, top: sub, dbl: sub && GRAND.test(norm(row.cuenta)) });
+        const line = [t(row.clase, st({ sz: 8, color: '666666' })), t(row.codigo, st({ sz: 9, color: '444444', h: 'center', b: sub, top: sub })), t(row.cuenta, st({ b: sub, top: sub, ind: row.lvl || 0, dbl: sub && GRAND.test(norm(row.cuenta)) }))];
         let tot = 0;
+        const origenes = [];
         for (const e of es) {
           const v = row.vals.get(e.id);
-          line.push(v ? n(v.importe, st) : t('', st));
-          line.push(t(v ? `${v.pdf} · p.${v.page}${v.enBlanco ? ' · (en blanco)' : ''}` : '', st));
+          line.push(v ? { t: 'n', v: v.importe, z: Number.isInteger(v.importe) ? '#,##0;-#,##0' : '#,##0.00;-#,##0.00', s: sb } : t('', sb));
+          origenes.push(t(v ? `${v.pdf} · p.${v.page}${v.enBlanco ? ' · (en blanco)' : ''}` : '', st({ sz: 8, color: '888888' })));
           tot += v ? v.importe : 0;
         }
-        line.push(n(tot, S.bold, amtCols.map((c) => `N(${colL(c)}${r})`).join('+') || '0'));
+        line.push({ t: 'n', v: tot, z: Number.isInteger(tot) ? '#,##0;-#,##0' : '#,##0.00;-#,##0.00', f: amtCols.map((c) => `N(${colL(c)}${r})`).join('+') || '0', s: st({ b: true, top: sub, dbl: sub && GRAND.test(norm(row.cuenta)) }) });
         const solo = row.vals.size === 1 && es.length > 1 && g.tipo !== 'PDT710' ? `Solo figura en ${emps.find((e) => e.id === [...row.vals.keys()][0]).nombre}` : '';
         const dif = [...row.vals.values()].some((v) => v.validacion === 'diferencia') ? 'Subtotal con diferencia en origen' : '';
-        line.push(t([solo, dif].filter(Boolean).join(' · ')));
+        line.push(t([solo, dif].filter(Boolean).join(' · '), st({ sz: 8, color: '996600' })), t(''), ...origenes);
         aoa.push(line);
       });
-      const totCol = 3 + es.length * 2;
+      const totCol = 3 + es.length;
       // control de cuadre
       if (g.control) {
         const ra = rowOf.get(g.control.activo.key), rp = rowOf.get(g.control.pasivoPatrimonio.key);
         aoa.push([]);
-        aoa.push([t('Control: total activo − total pasivo y patrimonio (debe ser 0)', S.bold), t(''), t(''), ...es.flatMap(() => [t(''), t('')]),
+        aoa.push([t('Control: total activo − total pasivo y patrimonio (debe ser 0)', S.bold), t(''), t(''), ...es.map(() => t('')),
           n((g.control.activo.vals.size ? [...g.control.activo.vals.values()].reduce((s, v) => s + v.importe, 0) : 0) - [...g.control.pasivoPatrimonio.vals.values()].reduce((s, v) => s + v.importe, 0), S.bold, `${colL(totCol)}${ra}-${colL(totCol)}${rp}`)]);
       }
-      const widths = [11, 8, 50, ...es.flatMap(() => [16, 30]), 20, 40];
+      const widths = [11, 8, 50, ...es.map(() => 15), 18, 34, 2, ...es.map(() => 34)];
       consInfo.set(g.key, { name, rowOf, totCol, first });
       sheetsOut.push({ name, ws: finish(aoa, widths, { freezeRow: 5, freezeCol: 3 }) });
     }
@@ -305,15 +379,18 @@ export function createKit(XLSX) {
         const b0 = aoa.length + 1;
         const idx = new Map();
         g.rows.forEach((row, i) => {
+          if (row.heading) { aoa.push([t(row.clase, st({ sz: 8, color: '666666' })), t(''), t(row.cuenta, st({ b: true }))]); return; }
           const r = aoa.length + 1;
           idx.set(row.key, r);
           const before = [...row.vals.values()].reduce((s, v) => s + v.importe, 0);
           const el = model.efectos.filter((e) => e.grupo === g.key && e.rowKey === row.key).reduce((s, e) => s + e.importe, 0);
-          const st = row.subtotal ? S.sub_row : null;
-          aoa.push([t(row.clase, st), t(row.codigo, st), t(row.cuenta, st),
-            n(before, st, `${q(info.name)}!${colL(info.totCol)}${info.rowOf.get(row.key)}`),
-            n(el, st, `SUMIFS(${q(efName)}!$E$${e0}:$E$${e1},${q(efName)}!$A$${e0}:$A$${e1},"${g.key}",${q(efName)}!$B$${e0}:$B$${e1},"${row.key.replace(/"/g, '""')}")`),
-            n(before + el, st, `D${r}+E${r}`)]);
+          const sub = row.subtotal;
+          const sb = st({ b: sub, top: sub, dbl: sub && GRAND.test(norm(row.cuenta)) });
+          const nm = (v, f) => ({ t: 'n', v, z: Number.isInteger(v) ? '#,##0;-#,##0' : '#,##0.00;-#,##0.00', ...(f ? { f } : {}), s: sb });
+          aoa.push([t(row.clase, st({ sz: 8, color: '666666' })), t(row.codigo, st({ sz: 9, color: '444444', h: 'center' })), t(row.cuenta, st({ b: sub, top: sub, ind: row.lvl || 0 })),
+            nm(before, `${q(info.name)}!${colL(info.totCol)}${info.rowOf.get(row.key)}`),
+            nm(el, `SUMIFS(${q(efName)}!$E$${e0}:$E$${e1},${q(efName)}!$A$${e0}:$A$${e1},"${g.key}",${q(efName)}!$B$${e0}:$B$${e1},"${row.key.replace(/"/g, '""')}")`),
+            nm(before + el, `D${r}+E${r}`)]);
         });
         if (g.control) {
           const ra = idx.get(g.control.activo.key), rp = idx.get(g.control.pasivoPatrimonio.key);
