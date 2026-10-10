@@ -6,6 +6,11 @@
   "license": "MIT",
   "scripts": {
     "test": "node --test test/*.test.js",
-    "start": "node scripts/serve.mjs"
+    "start": "node scripts/serve.mjs",
+    "financiero": "node scripts/fin-cli.mjs"
+  },
+  "devDependencies": {
+    "pdfjs-dist": "4.10.38",
+    "xlsx-js-style": "1.2.0"
   }
 }

@@ -42,8 +42,9 @@ function buildCells(line, glyphH, wordGap) {
       last.w = it.x + it.w - last.x;
       last.y = Math.min(last.y, it.y);
       last.h = Math.max(last.h, it.y + it.h - last.y);
+      if (it.conf != null) last.conf = Math.min(last.conf ?? 100, it.conf);
     } else {
-      cells.push({ str: it.str.trim(), x: it.x, y: it.y, w: it.w, h: it.h });
+      cells.push({ str: it.str.trim(), x: it.x, y: it.y, w: it.w, h: it.h, ...(it.conf != null ? { conf: it.conf } : {}) });
     }
   }
   return cells;
@@ -109,16 +110,35 @@ function bboxOf(cellsRows) {
   return { x0, y0, x1, y1 };
 }
 
-export function extractTables(items, opts = {}) {
+// Convierte el texto de una página de pdf.js en fragmentos con posición (origen arriba-izquierda).
+export function pdfTextToItems(textContent, pageH) {
+  const items = [];
+  for (let idx = 0; idx < textContent.items.length; idx++) {
+    const it = textContent.items[idx];
+    if (!it.str || !it.str.trim()) continue;
+    const [a, b, , d, e, f] = it.transform;
+    if (Math.abs(b) > Math.abs(a) * 0.2) continue; // texto girado: se ignora
+    const h = it.height || Math.abs(d);
+    items.push({ str: it.str, x: e, y: pageH - f - h * 0.8, w: it.width, h, sz: Math.abs(a), idx });
+  }
+  return items;
+}
+
+// Agrupa los fragmentos en líneas con celdas, sin decidir todavía qué es tabla.
+export function analyzeLines(items, opts = {}) {
   const wordGap = opts.wordGap ?? 0.7;
   const clean = items.filter((i) => i.str && i.str.trim() !== '' && i.h > 0);
-  if (clean.length === 0) return { tables: [], textLines: [] };
-
+  if (clean.length === 0) return { glyphH: 0, pitch: 0, lines: [] };
   const glyphH = median(clean.map((i) => i.h));
   const lines = groupLines(clean, glyphH);
   for (const l of lines) l.cells = buildCells(l, glyphH, wordGap);
-
   const pitch = median(lines.slice(1).map((l, i) => l.yc - lines[i].yc)) || glyphH * 1.4;
+  return { glyphH, pitch, lines };
+}
+
+export function extractTables(items, opts = {}) {
+  const { glyphH, pitch, lines } = analyzeLines(items, opts);
+  if (lines.length === 0) return { tables: [], textLines: [] };
   const tabular = lines.map((l) => l.cells.length >= 2);
 
   // Tramos de líneas consecutivas que parecen tabla (se tolera 1 línea suelta en medio: texto envuelto).
