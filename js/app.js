@@ -1,14 +1,9 @@
-import * as pdfjsLib from '../vendor/pdfjs/pdf.min.mjs';
-import { extractTables, mergeAcrossPages } from './extract.js';
+import { extractTables, mergeAcrossPages, pdfTextToItems } from './extract.js';
 import { parseNumber } from './numbers.js';
-
-pdfjsLib.GlobalWorkerOptions.workerSrc = new URL('../vendor/pdfjs/pdf.worker.min.mjs', import.meta.url).href;
+import { readPdf, readImage, renderPdfPage, isPdf } from './reader.js';
 
 const $ = (id) => document.getElementById(id);
-const OCR_SCALE = 2.5; // más resolución = mejor OCR, pero más lento
 const state = { tables: [], textLines: [], docs: new Map(), current: 0, nextId: 1 };
-let ocrWorker = null;
-let ocrLang = null;
 
 // ---------- Utilidades de interfaz ----------
 function setStatus(text, fraction) {
@@ -25,101 +20,28 @@ const opt = () => ({
   text: $('opt-text').checked,
 });
 
-// ---------- OCR ----------
-async function getOcrWorker(lang, onProgress) {
-  if (ocrWorker && ocrLang === lang) return ocrWorker;
-  if (ocrWorker) await ocrWorker.terminate();
-  const base = new URL('../vendor/', import.meta.url).href;
-  ocrWorker = await Tesseract.createWorker(lang.split('+'), 1, {
-    workerPath: base + 'tesseract/worker.min.js',
-    corePath: base + 'tesseract',
-    langPath: base + 'tessdata',
-    gzip: true,
-    workerBlobURL: false,
-    logger: (m) => { if (m.status === 'recognizing text') onProgress?.(m.progress); },
-  });
-  ocrLang = lang;
-  return ocrWorker;
-}
-
-async function ocrCanvas(canvas, lang, onProgress) {
-  const worker = await getOcrWorker(lang, onProgress);
-  const { data } = await worker.recognize(canvas);
-  return (data.words || [])
-    .filter((w) => w.text && /[\p{L}\p{N}]/u.test(w.text) && w.confidence >= 30) // descarta rayas y ruido sin letras ni números
-    .map((w) => ({ str: w.text, x: w.bbox.x0, y: w.bbox.y0, w: w.bbox.x1 - w.bbox.x0, h: w.bbox.y1 - w.bbox.y0 }));
-}
-
 // ---------- Lectura de archivos ----------
-async function renderPdfPage(pdf, pageNo, scale) {
-  const page = await pdf.getPage(pageNo);
-  const viewport = page.getViewport({ scale });
-  const canvas = document.createElement('canvas');
-  canvas.width = Math.ceil(viewport.width);
-  canvas.height = Math.ceil(viewport.height);
-  await page.render({ canvasContext: canvas.getContext('2d'), viewport }).promise;
-  return canvas;
-}
-
-function pdfItems(textContent, pageH) {
-  const items = [];
-  for (const it of textContent.items) {
-    if (!it.str || !it.str.trim()) continue;
-    const [a, b, , d, e, f] = it.transform;
-    if (Math.abs(b) > Math.abs(a) * 0.2) continue; // texto girado: se ignora
-    const h = it.height || Math.abs(d);
-    items.push({ str: it.str, x: e, y: pageH - f - h * 0.8, w: it.width, h });
-  }
-  return items;
-}
-
 async function processPdf(file, o, progress) {
-  const data = new Uint8Array(await file.arrayBuffer());
-  const pdf = await pdfjsLib.getDocument({
-    data,
-    cMapUrl: new URL('../vendor/pdfjs/cmaps/', import.meta.url).href,
-    cMapPacked: true,
-  }).promise;
+  const { pdf, pages } = await readPdf(file, o, progress);
   const fileId = state.nextId++;
   state.docs.set(fileId, { kind: 'pdf', pdf });
   const found = [];
-  for (let p = 1; p <= pdf.numPages; p++) {
-    progress(`${file.name}: página ${p} de ${pdf.numPages}`, (p - 1) / pdf.numPages);
-    const page = await pdf.getPage(p);
-    const vp = page.getViewport({ scale: 1 });
-    const text = await page.getTextContent();
-    let items = pdfItems(text, vp.height);
-    let pageW = vp.width, pageH = vp.height, source = 'pdf';
-    const chars = items.reduce((s, i) => s + i.str.length, 0);
-    const needOcr = o.ocr === 'force' || (o.ocr === 'auto' && chars < 20);
-    if (needOcr) {
-      progress(`${file.name}: página ${p} (leyendo con OCR, puede tardar)`, (p - 1) / pdf.numPages);
-      const canvas = await renderPdfPage(pdf, p, OCR_SCALE);
-      items = await ocrCanvas(canvas, o.lang, (f) => progress(`${file.name}: página ${p} (OCR ${Math.round(f * 100)}%)`, (p - 1 + f) / pdf.numPages));
-      pageW = canvas.width; pageH = canvas.height; source = 'ocr';
-    }
+  for (const { page, pageW, pageH, items, source } of pages) {
     const { tables, textLines } = extractTables(items);
-    for (const t of tables) found.push({ ...t, page: p, pageW, pageH, source });
-    state.textLines.push(...textLines.map((t) => [file.name, p, t]));
+    for (const t of tables) found.push({ ...t, page, pageW, pageH, source });
+    state.textLines.push(...textLines.map((t) => [file.name, page, t]));
   }
   return found.map((t) => ({ ...t, fileId, fileName: file.name }));
 }
 
 async function processImage(file, o, progress) {
-  const bitmap = await createImageBitmap(file);
+  const { bitmap, pages } = await readImage(file, o, progress);
   const fileId = state.nextId++;
   state.docs.set(fileId, { kind: 'image', bitmap });
-  const canvas = document.createElement('canvas');
-  // Las imágenes pequeñas se amplían para que el OCR lea mejor.
-  const k = Math.max(1, Math.min(3, 2000 / Math.max(bitmap.width, 1)));
-  canvas.width = Math.round(bitmap.width * k);
-  canvas.height = Math.round(bitmap.height * k);
-  canvas.getContext('2d').drawImage(bitmap, 0, 0, canvas.width, canvas.height);
-  progress(`${file.name}: leyendo con OCR`, 0);
-  const items = await ocrCanvas(canvas, o.lang, (f) => progress(`${file.name}: OCR ${Math.round(f * 100)}%`, f));
+  const { page, pageW, pageH, items } = pages[0];
   const { tables, textLines } = extractTables(items);
   state.textLines.push(...textLines.map((t) => [file.name, 1, t]));
-  return tables.map((t) => ({ ...t, page: 1, pageW: canvas.width, pageH: canvas.height, source: 'ocr', fileId, fileName: file.name }));
+  return tables.map((t) => ({ ...t, page: 1, pageW, pageH, source: 'ocr', fileId, fileName: file.name }));
 }
 
 async function handleFiles(fileList) {
@@ -134,8 +56,7 @@ async function handleFiles(fileList) {
       const f = files[i];
       const prefix = files.length > 1 ? `(${i + 1}/${files.length}) ` : '';
       const progress = (txt, frac) => setStatus(prefix + txt, (i + frac) / files.length);
-      const isPdf = f.type === 'application/pdf' || /\.pdf$/i.test(f.name);
-      let found = isPdf ? await processPdf(f, o, progress) : await processImage(f, o, progress);
+      let found = isPdf(f) ? await processPdf(f, o, progress) : await processImage(f, o, progress);
       if (o.merge) found = mergeAcrossPages(found);
       all = all.concat(found);
     }
