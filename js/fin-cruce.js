@@ -319,23 +319,47 @@ export function buildModel(docsIn, opts = {}) {
   for (const r of sinUbicar) inc('alta', 'Eliminación', `La eliminación de "${r.cuenta}" (${r.empresa}) no pudo ubicarse en una fila del estado financiero; el consolidado "después" no la refleja.`, { pdf: r.pdf, pagina: r.page, empresa: r.empresa });
 
   // ---------- consolidados por (tipo, corte) ----------
+  // Las filas siguen el orden y las secciones de los estados originales; las cuentas que solo existen
+  // en una empresa se insertan junto a la cuenta que las precede en su propio documento.
   const grupos = [];
   const gmap = new Map();
-  for (const l of lineas) {
-    if (!(l.clase === 'Balance' || l.clase === 'Resultados')) continue;
-    let g = gmap.get(l.grupo);
-    if (!g) { g = { key: l.grupo, tipo: l.tipo, corte: l.fechaCorte, etiqueta: l.periodoEtiqueta, empresas: [], rows: [], rmap: new Map() }; gmap.set(l.grupo, g); grupos.push(g); }
-    if (!g.empresas.includes(l.empresaId)) g.empresas.push(l.empresaId);
-    let row = g.rmap.get(l.rowKey);
-    if (!row) { row = { key: l.rowKey, cuenta: l.cuenta, codigo: l.codigo, clase: l.clase, subtotal: l.subtotal, vals: new Map() }; g.rmap.set(l.rowKey, row); g.rows.push(row); }
-    row.vals.set(l.empresaId, { importe: l.importe ?? 0, enBlanco: l.enBlanco, pdf: l.pdf, page: l.page, gid: l.gid, validacion: l.validacion });
+  for (const d of docs) {
+    if (d.duplicado || !d.fechaCorte) continue;
+    const tipo = d.tipo === 'DESCONOCIDO' ? 'EEFF' : d.tipo;
+    const gkey = `${d.tipo}|${d.fechaCorte}`;
+    let g = gmap.get(gkey);
+    if (!g) { g = { key: gkey, tipo, corte: d.fechaCorte, etiqueta: d.periodoEtiqueta, empresas: [], rows: [] }; gmap.set(gkey, g); grupos.push(g); }
+    if (!g.empresas.includes(d.empresa_.id)) g.empresas.push(d.empresa_.id);
+    let ptr = -1;
+    const seenH = new Map();
+    for (const e of d.estructura) {
+      if (e.tipo === 't' || e.consumido || !(e.clase === 'Balance' || e.clase === 'Resultados')) continue;
+      let key, make, line = null;
+      if (e.tipo === 'h') {
+        const hk = `H|${e.clase}|${norm(e.texto)}`;
+        const c = (seenH.get(hk) || 0) + 1;
+        seenH.set(hk, c);
+        key = c > 1 ? `${hk} #${c}` : hk;
+        make = () => ({ key, heading: true, cuenta: e.texto, codigo: '', clase: e.clase, subtotal: false, lvl: 0, vals: new Map() });
+      } else {
+        line = byGid.get(`${d.idx}:${e.lineIds[0]}`);
+        if (!line) continue;
+        key = line.rowKey;
+        make = () => ({ key, cuenta: line.cuenta, codigo: line.codigo, clase: line.clase, subtotal: line.subtotal, lvl: e.lvl || 0, vals: new Map() });
+      }
+      let idx = g.rows.findIndex((r) => r.key === key);
+      if (idx < 0) { idx = ptr + 1; g.rows.splice(idx, 0, make()); }
+      ptr = idx;
+      if (line) g.rows[idx].vals.set(d.empresa_.id, { importe: line.importe ?? 0, enBlanco: line.enBlanco, pdf: line.pdf, page: line.page, gid: line.gid, validacion: line.validacion });
+    }
   }
+  for (const g of grupos) g.rmap = new Map(g.rows.map((r) => [r.key, r]));
   grupos.sort((a, b) => a.corte.localeCompare(b.corte) || a.tipo.localeCompare(b.tipo));
   for (const g of grupos) {
     const act = g.rows.find((r) => g.tipo === 'PDT710' ? r.key === '390' : /Balance\|TOTAL ACTIVO$/.test(r.key));
     const pp = g.rows.find((r) => g.tipo === 'PDT710' ? r.key === '426' : /Balance\|TOTAL PASIVO Y PATRIMONIO$/.test(r.key));
     g.control = act && pp ? { activo: act, pasivoPatrimonio: pp } : null;
-    const sinNombre = g.rows.filter((r) => g.tipo !== 'PDT710' && r.vals.size === 1 && g.empresas.length > 1).length;
+    const sinNombre = g.rows.filter((r) => !r.heading && g.tipo !== 'PDT710' && r.vals.size === 1 && g.empresas.length > 1).length;
     if (g.empresas.length > 1 && sinNombre) inc('info', 'Consolidación', `${g.etiqueta}: ${sinNombre} cuenta(s) existen en una sola empresa (los nombres de cuenta de los EEFF no son estándar); se muestran en su propia fila sin agrupar.`);
   }
 

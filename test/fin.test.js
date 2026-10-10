@@ -73,3 +73,28 @@ test('genera los libros sin errores', () => {
   for (const nombre of ['Resumen', 'Consolidado EEFF Jul-2026', 'Cruce CxC-CxP', 'Eliminaciones', 'Antes vs Después', 'Comparativo', 'Incidencias', 'Inventario PDF']) assert.ok(master.SheetNames.includes(nombre), nombre);
   for (const e of model.empresas) assert.ok(kit.toBytes(kit.buildEmpresaWorkbook(model, e)).byteLength > 1000);
 });
+
+test('las hojas por empresa tienen formato de estado financiero y totales con fórmula', () => {
+  const XLSX = createRequire(import.meta.url)('xlsx-js-style');
+  const kit = createKit(XLSX);
+  const wb = kit.buildEmpresaWorkbook(model, model.empresas[0]);
+  const ws = wb.Sheets['Balance Jul-2026'];
+  assert.ok(ws, 'existe la hoja Balance');
+  const celdas = Object.entries(ws).filter(([k]) => /^[A-Z]+\d+$/.test(k));
+  assert.ok(celdas.some(([, c]) => c.v === 'ALFA PERU SAC'), 'título con el nombre de la empresa');
+  assert.ok(celdas.some(([, c]) => c.v === 'ESTADO DE SITUACION FINANCIERA'), 'título del estado');
+  const totales = celdas.filter(([, c]) => c.f && c.f.startsWith('SUM('));
+  assert.ok(totales.length >= 3, 'los totales son fórmulas');
+  const totalActivo = celdas.find(([, c]) => c.v === 'TOTAL ACTIVO');
+  assert.equal(totalActivo[1].s.font.bold, true);
+  assert.equal(totalActivo[1].s.border.top.style, 'thin');
+  const importes = celdas.filter(([k, c]) => k.startsWith('C') && c.t === 'n');
+  assert.ok(importes.length >= 5, 'los importes son números, no texto');
+});
+
+test('el consolidado conserva el orden y las secciones del estado', () => {
+  const g = model.grupos[0];
+  const filas = g.rows.map((r) => (r.heading ? `H:${r.cuenta}` : r.cuenta));
+  assert.ok(filas.indexOf('H:ACTIVO CORRIENTE') < filas.indexOf('TOTAL ACTIVO CORRIENTE'));
+  assert.ok(filas.indexOf('TOTAL ACTIVO') < filas.indexOf('H:PASIVO CORRIENTE'));
+});

@@ -144,6 +144,9 @@ function parseEeffPage(pg, ctx) {
   let cur = ctx.clase;
   let sawData = false;
   const titulosTardios = [];
+  const titulos = [];
+  let colTitulo = '';
+  const headByLine = new Map();
   const empresaNorm = ctx.empresa ? normEmpresa(ctx.empresa) : '';
   for (const line of pg.lines) {
     const segs = segmentsOf(line.cells);
@@ -162,21 +165,27 @@ function parseEeffPage(pg, ctx) {
       if (/^(OTROS )?INGRESOS( ORDINARIOS| DE GESTION)?$|^COSTO DE (VENTAS|SERVICIOS?)$|^GASTOS (OPERATIVOS|ADMINISTRATIVOS|DE VENTAS?|DE DEPRECIACION|FINANCIEROS|DIVERSOS)$/.test(nl)) cur = 'Detalle resultados';
       else if (/(CUENTAS POR (COBRAR|PAGAR)|^EFECTIVO|^MERCADERIAS|^INTANGIBLES|^PROPIEDAD|^CAPITAL|^RESULTADOS ACUMULADOS|ACTIVOS? DIFERIDOS?|^DEPRECIACION|^TRIBUTOS|^REMUNERACIONES|^PASIVO|^OBLIGACIONES|^IMPUESTO A LA RENTA DIFERIDO)/.test(nl)) cur = 'Detalle balance';
     }
-    if (isFurniture(label) || (empresaNorm && normEmpresa(label) === empresaNorm)) { omitted += nums.length; continue; }
+    if (isFurniture(label) || (empresaNorm && normEmpresa(label) === empresaNorm)) { omitted += nums.length; if (label && !nums.length) titulos.push(label); continue; }
     const pct = segs.map((s) => s.pct).find((p) => p != null) ?? null;
     const codigo = segs.flatMap((s) => s.codes)[0] ?? '';
     if (nums.length === 0) {
+      if (label && /^[A-Za-z]{3,}-\d{2,4}$/.test(label)) { colTitulo = label; continue; } // encabezado de la columna de importes ("Jul-2026")
       if (label) {
         seccion = prevHeading && line.yc - lastHeadY <= pg.pitch * 1.6 ? `${seccion} ${label}` : label;
         prevHeading = true; lastHeadY = line.yc;
         recentText.push(line);
+        const hr = { heading: true, label, y: line.yc, x: line.cells[0]?.x ?? null, clase: cur, nCells: line.cells.length };
+        headByLine.set(line, hr);
+        rows.push(hr);
       }
       continue; // línea de solo porcentaje u otros: no aporta importes
     }
     prevHeading = false;
     sawData = true;
     if (nums.length > 1 && !colHeads) {
-      colHeads = recentText.filter((l) => line.yc - l.yc <= pg.pitch * 4.5).flatMap((l) => l.cells.map((c) => ({ ...c, y: l.yc })));
+      const usadas = recentText.filter((l) => line.yc - l.yc <= pg.pitch * 4.5);
+      colHeads = usadas.flatMap((l) => l.cells.map((c) => ({ ...c, y: l.yc })));
+      for (const l of usadas) { const hr = headByLine.get(l); if (hr && (l.cells.length >= 2 || /^(DETALLE|SALDO|DEPRECIACION|31\/|01\/|DEL )/i.test(norm(hr.label)))) hr.consumido = true; }
     }
     if (nums.length <= 1) colHeads = null;
     const centers = nums.map((n) => n.x + n.w / 2);
@@ -193,9 +202,9 @@ function parseEeffPage(pg, ctx) {
       return { importe: n.v, columna: columna || (nums.length > 1 ? `Col. ${j + 1}` : '') };
     });
     recentText = [];
-    rows.push({ label, codigo, pct, entries, seccion, y: line.yc, nusados: nums.length, clase: cur });
+    rows.push({ label, codigo, pct, entries, seccion, y: line.yc, nusados: nums.length, clase: cur, x: segs.flatMap((s) => s.labelCells)[0]?.x ?? null });
   }
-  return { rows, omitted, titulosTardios };
+  return { rows, omitted, titulosTardios, titulos, colTitulo };
 }
 
 // ---------- parser PDT 710 ----------
@@ -205,10 +214,15 @@ function parsePdtPage(pg, ctx) {
   const sides = twoSided ? [0, 1] : [0];
   const segsAll = [];
   const strays = [];
+  const titulos = [];
   let omitted = 0;
   for (const line of pg.lines) {
     const joined = lineText(line);
-    if (isFurniture(joined) || isFurniture(line.cells[0]?.str || '')) { omitted += line.cells.filter((c) => kindOf(c.str).k === 'num').length; continue; }
+    if (isFurniture(joined) || isFurniture(line.cells[0]?.str || '')) {
+      omitted += line.cells.filter((c) => kindOf(c.str).k === 'num').length;
+      if (!/RUC|RAZON SOCIAL|PERIODO TRIBUTARIO|NUMERO DE (ORDEN|FORMULARIO)|FECHA|^PAGINA/.test(norm(joined))) titulos.push(joined);
+      continue;
+    }
     for (const side of sides) {
       const cells = line.cells.filter((c) => !twoSided || ((c.x + c.w / 2 < mid) === (side === 0)));
       if (!cells.length) continue;
@@ -232,7 +246,7 @@ function parsePdtPage(pg, ctx) {
         if (next) { pairs.push({ casilla: String(nums[i].v), amount: next.v, used: 2 }); i += 2; } else { pairs.push({ casilla: String(nums[i].v), amount: null, used: 1 }); i += 1; }
       } else { pairs.push({ casilla: '', amount: nums[i].v, used: 1, odd: true }); i += 1; }
     }
-    pairs.forEach((p, j) => rows.push({ side: sg.side, y: sg.y, label: j === 0 ? sg.label : '', labelCells: j === 0 ? sg.labelCells : [], ...p }));
+    pairs.forEach((p, j) => rows.push({ side: sg.side, y: sg.y, label: j === 0 ? sg.label : '', labelCells: j === 0 ? sg.labelCells : [], x: j === 0 ? sg.labelCells[0]?.x ?? null : null, ...p }));
   }
   // Rótulos partidos: filas sin rótulo toman los textos sueltos cercanos del mismo lado;
   // los textos que empiezan en minúscula continúan el rótulo de la fila más cercana.
@@ -254,11 +268,13 @@ function parsePdtPage(pg, ctx) {
     const above = heads.filter((h) => h.side === r.side && h.y < r.y).sort((a, b) => b.y - a.y)[0];
     r.seccion = above ? above.label : '';
   }
-  rows.sort((a, b) => a.side - b.side || a.y - b.y);
-  return { omitted, rows: rows.map((r) => ({
-    label: r.label, codigo: r.casilla, pct: null, seccion: r.seccion, y: r.y, nusados: r.used + 0,
+  const out = rows.map((r) => ({
+    label: r.label, codigo: r.casilla, pct: null, seccion: r.seccion, y: r.y, nusados: r.used + 0, side: r.side, x: r.x,
     entries: [{ importe: r.amount, columna: '' }], odd: r.odd, blank: r.amount == null,
-  })) };
+  }));
+  for (const h of heads) out.push({ heading: true, label: h.label, y: h.y, side: h.side, x: h.x });
+  out.sort((a, b) => a.side - b.side || a.y - b.y);
+  return { omitted, rows: out, titulos };
 }
 
 // ---------- validación de subtotales ----------
@@ -282,14 +298,16 @@ function validar(lineas) {
       const cands = [];
       const c1 = since(lastSubIdx);
       if (c1.length) cands.push({ refs: c1.map((x) => x.n), tipo: 'detalle' });
-      const c3 = prev.filter((x) => !x.subtotal);
-      if (c3.length) cands.push({ refs: c3.map((x) => x.n), tipo: 'detalle acumulado' });
+      // Orden de preferencia: detalle desde el subtotal anterior, suma de subtotales, subtotal previo + detalle
+      // y, al final, todo el detalle acumulado (la fórmula más corta y natural gana).
+      for (const m of [2, 3]) if (prevSubs.length >= m) cands.push({ refs: prevSubs.slice(-m).map((x) => x.n), tipo: 'suma de subtotales' });
       for (let k = 1; k <= Math.min(6, prevSubs.length); k++) {
         const s = prevSubs[prevSubs.length - k];
         const sIdx = prev.indexOf(s);
         cands.push({ refs: [s.n, ...since(sIdx).map((x) => x.n)], tipo: 'subtotal previo + detalle' });
       }
-      for (const m of [2, 3]) if (prevSubs.length >= m) cands.push({ refs: prevSubs.slice(-m).map((x) => x.n), tipo: 'suma de subtotales' });
+      const c3 = prev.filter((x) => !x.subtotal);
+      if (c3.length) cands.push({ refs: c3.map((x) => x.n), tipo: 'detalle acumulado' });
       const byN = new Map(lineas.map((x) => [x.n, x]));
       let best = null;
       for (const c of cands) {
@@ -364,6 +382,7 @@ export function parseDocument({ pdf, pages }) {
 
   const lineas = [];
   const paginas = [];
+  const estructura = []; // orden y formato del documento original: títulos, secciones, filas, sangrías
   let n = 0;
   for (const a of analyzed) {
     const clase = pageClass(tipoUse, texts[a.page - 1]);
@@ -384,7 +403,13 @@ export function parseDocument({ pdf, pages }) {
     const rows = parsed.rows;
     base.omitidos = parsed.omitted;
     if (parsed.titulosTardios?.length) inc('media', a.page, `Aparecen títulos de estado en medio de la página (${[...new Set(parsed.titulosTardios)].join('; ')}): probable texto encimado; se ignoraron. Verifique la página.`, 'Texto superpuesto');
+    if (parsed.titulos?.length || parsed.colTitulo) estructura.push({ tipo: 't', page: a.page, clase, textos: parsed.titulos || [], colTitulo: parsed.colTitulo || '' });
+    let prevY = null, prevSide = null;
+    const pitchP = a.pitch || 1;
+    const gapOf = (r) => { const g = prevY == null || (r.side ?? 0) !== prevSide ? 0 : Math.max(0, Math.min(2, Math.round((r.y - prevY) / pitchP) - 1)); prevY = r.y; prevSide = r.side ?? 0; return g; };
     for (const r of rows) {
+      if (r.heading) { estructura.push({ tipo: 'h', page: a.page, clase: r.clase || clase, texto: r.label, x: r.x, y: r.y, side: r.side ?? 0, gap: gapOf(r), consumido: !!r.consumido, gh: a.glyphH }); continue; }
+      const idsFila = [];
       r.entries.forEach((e, j) => {
         const cuenta = r.label || (tipoUse === 'PDT710' ? (r.codigo ? `Casilla ${r.codigo}` : '(sin rótulo)') : '(subtotal sin rótulo)');
         const claseRow = r.clase || clase;
@@ -394,13 +419,19 @@ export function parseDocument({ pdf, pages }) {
           enBlanco: e.importe == null, source: a.source, moneda,
         };
         lineas.push(l);
+        idsFila.push(l.n);
         if (!r.label && tipoUse === 'PDT710') inc('media', a.page, `Casilla ${r.codigo || '?'} sin rótulo detectado (importe ${e.importe ?? 'en blanco'}).`, 'Extracción');
         if (r.odd) inc('media', a.page, `Número suelto sin casilla: ${e.importe} (${r.label || 'sin rótulo'}). Revisar.`, 'Extracción');
         if (/(^|\s)-?\(?\d{1,3}(,\d{3})+(\.\d+)?\)?(\s|$)/.test(r.label)) inc('alta', a.page, `Posible cifra pegada dentro del rótulo "${r.label}": revisar que no falte un importe.`, 'Cobertura');
       });
       base.leidos += r.nusados;
+      estructura.push({ tipo: 'd', page: a.page, clase: r.clase || clase, texto: r.label, x: r.x, y: r.y, side: r.side ?? 0, gap: gapOf(r), lineIds: idsFila, codigo: r.codigo || '', pct: r.pct, gh: a.glyphH });
     }
   }
+  // Nivel de sangría de cada fila: se agrupan las posiciones x de los rótulos por página y bloque.
+  const gruposX = new Map();
+  for (const e of estructura) if (e.tipo !== 't' && e.x != null) { const k = `${e.page}|${e.clase}|${e.side}`; gruposX.set(k, Math.min(gruposX.get(k) ?? Infinity, e.x)); }
+  for (const e of estructura) if (e.tipo !== 't') e.lvl = e.x == null ? 0 : Math.max(0, Math.min(4, Math.round((e.x - gruposX.get(`${e.page}|${e.clase}|${e.side}`)) / ((e.gh || 10) * 1.6))));
   if (analyzed.some((a) => a.sinVerificar)) inc('media', '', 'No se pudo verificar si hay texto oculto en este PDF (no se renderizó la página).', 'Texto oculto');
   validar(lineas);
   for (const l of lineas) {
@@ -414,5 +445,5 @@ export function parseDocument({ pdf, pages }) {
   const info = paginas.filter((p) => p.informativa).map((p) => p.page);
   if (info.length) inc('info', info.join(', '), 'Páginas informativas (identificación, datos del declarante, constancia): no se extraen cifras; se usan solo para identificar empresa y periodo.', 'Cobertura');
 
-  return { pdf, tipo, empresa: { nombre: empresa, ruc }, fechaCorte, periodoEtiqueta, moneda, paginas, lineas, incidencias };
+  return { pdf, tipo, empresa: { nombre: empresa, ruc }, fechaCorte, periodoEtiqueta, moneda, paginas, lineas, incidencias, estructura };
 }
