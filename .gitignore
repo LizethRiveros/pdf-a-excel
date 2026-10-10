@@ -1,0 +1,4 @@
+node_modules/
+.DS_Store
+# Documentos reales que se usen para probar (pueden ser confidenciales)
+/privado/

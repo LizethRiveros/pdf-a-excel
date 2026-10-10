@@ -1,0 +1,11 @@
+{
+  "name": "pdf-a-excel",
+  "version": "0.1.0",
+  "description": "Convierte tablas de PDF (digitales o escaneados) a Excel, 100% en tu navegador.",
+  "type": "module",
+  "license": "MIT",
+  "scripts": {
+    "test": "node --test test/*.test.js",
+    "start": "node scripts/serve.mjs"
+  }
+}

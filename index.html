@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>PDF a Excel</title>
+  <meta name="description" content="Convierte tablas de PDF (digitales o escaneados) a Excel gratis. Todo se procesa en tu navegador: tus archivos no se suben a ningún servidor.">
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="css/styles.css">
+</head>
+<body>
+  <header class="top">
+    <div class="wrap">
+      <h1>PDF a Excel</h1>
+      <p class="lead">Convierte las tablas de un PDF o una foto en un archivo de Excel. Gratis, sin cuenta y sin inteligencia artificial de pago.</p>
+      <p class="privacy">🔒 Tus archivos <strong>no salen de tu computadora</strong>: todo se procesa aquí, en tu navegador.</p>
+    </div>
+  </header>
+
+  <main class="wrap">
+    <section id="upload" aria-labelledby="t-upload">
+      <h2 id="t-upload" class="sr-only">Cargar archivos</h2>
+      <label id="drop" class="drop" tabindex="0">
+        <input id="file" type="file" accept=".pdf,application/pdf,image/png,image/jpeg,image/webp" multiple hidden>
+        <strong>Arrastra aquí tus PDF o imágenes</strong>
+        <span>o haz clic para elegirlos (PDF, PNG, JPG)</span>
+      </label>
+
+      <details class="options">
+        <summary>Opciones</summary>
+        <div class="grid-opts">
+          <label>Si el PDF es un escaneo (sin texto)
+            <select id="opt-ocr">
+              <option value="auto" selected>Usar OCR automáticamente</option>
+              <option value="force">Usar OCR siempre</option>
+              <option value="never">No usar OCR</option>
+            </select>
+          </label>
+          <label>Idioma del documento (OCR)
+            <select id="opt-lang">
+              <option value="spa+eng" selected>Español + inglés</option>
+              <option value="spa">Español</option>
+              <option value="eng">Inglés</option>
+            </select>
+          </label>
+          <label>Separador decimal de los números
+            <select id="opt-decimal">
+              <option value="." selected>Punto (1,234.56) — Perú, México, EE. UU.</option>
+              <option value=",">Coma (1.234,56) — España, Argentina, Chile</option>
+            </select>
+          </label>
+          <label class="check"><input id="opt-merge" type="checkbox" checked> Unir tablas que continúan en la página siguiente</label>
+          <label class="check"><input id="opt-numbers" type="checkbox" checked> Convertir montos y porcentajes a números de Excel</label>
+          <label class="check"><input id="opt-text" type="checkbox"> Incluir también el texto fuera de las tablas (hoja “Texto”)</label>
+        </div>
+      </details>
+    </section>
+
+    <section id="status" class="status" hidden aria-live="polite">
+      <div class="bar"><div id="bar-fill"></div></div>
+      <p id="status-text"></p>
+    </section>
+
+    <section id="results" hidden aria-labelledby="t-results">
+      <div class="results-head">
+        <h2 id="t-results">Tablas encontradas</h2>
+        <div class="actions">
+          <button id="btn-xlsx" class="primary">Descargar Excel (.xlsx)</button>
+          <button id="btn-csv">Esta tabla en CSV</button>
+        </div>
+      </div>
+      <p class="hint">Revisa cada tabla: puedes editar las celdas, y unir o borrar filas y columnas antes de descargar. Desmarca las tablas que no quieras incluir.</p>
+
+      <div class="workspace">
+        <nav id="tabs" class="tabs" aria-label="Tablas"></nav>
+        <div class="editor">
+          <div class="toolbar" role="toolbar" aria-label="Editar tabla">
+            <button data-op="add-row">+ Fila</button>
+            <button data-op="add-col">+ Columna</button>
+            <button data-op="del-row">Borrar fila</button>
+            <button data-op="del-col">Borrar columna</button>
+            <button data-op="merge-down" title="Une el texto de la celda con el de la fila de abajo (útil si una celda se partió en dos líneas)">Unir con fila de abajo</button>
+            <button data-op="merge-right" title="Une el texto de la celda con el de la columna de la derecha">Unir con columna derecha</button>
+          </div>
+          <div class="table-scroll"><table id="grid"></table></div>
+        </div>
+        <aside class="preview">
+          <h3>Documento original</h3>
+          <div id="preview-box" class="preview-box"><canvas id="preview-canvas"></canvas><div id="preview-hl" class="hl"></div></div>
+        </aside>
+      </div>
+    </section>
+
+    <section id="empty" hidden class="empty">
+      <p>No encontré tablas en este archivo. Prueba activar el OCR en <em>Opciones</em> o sube una imagen más nítida.</p>
+    </section>
+  </main>
+
+  <footer class="wrap foot">
+    <p>Código abierto (MIT). Hecho con <a href="https://mozilla.github.io/pdf.js/">pdf.js</a>, <a href="https://tesseract.projectnaptha.com/">Tesseract.js</a> y <a href="https://sheetjs.com/">SheetJS</a>.</p>
+  </footer>
+
+  <script src="vendor/xlsx/xlsx.full.min.js"></script>
+  <script src="vendor/tesseract/tesseract.min.js"></script>
+  <script type="module" src="js/app.js"></script>
+</body>
+</html>
